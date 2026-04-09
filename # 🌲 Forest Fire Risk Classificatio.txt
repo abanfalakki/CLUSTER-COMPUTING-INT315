@@ -1,0 +1,73 @@
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, mean, when
+from pyspark.ml.feature import StringIndexer, VectorAssembler
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+import matplotlib.pyplot as plt
+
+# 1. Start Spark Session
+spark = SparkSession.builder \
+    .appName("ForestFireRiskClassification") \
+    .getOrCreate()
+
+# 2. Load Dataset
+df = spark.read.csv(r"C:\Users\abanf\OneDrive\Downloads\forest+fires\forestfires.csv", header=True, inferSchema=True)
+
+# 3. Handle Missing Values
+columns = ["temp", "RH", "wind", "rain"]
+for c in columns:
+    avg_value = df.select(mean(col(c))).collect()[0][0]
+    df = df.fillna({c: avg_value})
+
+# 4. Encode Categorical Columns
+month_indexer = StringIndexer(inputCol="month", outputCol="monthIndex")
+day_indexer = StringIndexer(inputCol="day", outputCol="dayIndex")
+
+df = month_indexer.fit(df).transform(df)
+df = day_indexer.fit(df).transform(df)
+
+# 5. Create Label Column
+df = df.withColumn("label", when(col("area") > 0, 1).otherwise(0))
+
+# 6. Feature Engineering
+feature_cols = ["temp", "RH", "wind", "rain", "monthIndex", "dayIndex"]
+assembler = VectorAssembler(inputCols=feature_cols, outputCol="features")
+data = assembler.transform(df)
+
+# 7. Train-Test Split
+train_data, test_data = data.randomSplit([0.7, 0.3], seed=42)
+
+# 8. Train Model
+rf = RandomForestClassifier(featuresCol="features", labelCol="label", numTrees=50)
+model = rf.fit(train_data)
+
+# 9. Predictions
+predictions = model.transform(test_data)
+predictions.select("X", "Y", "label", "prediction").show(5)
+
+# 10. Evaluation
+accuracy_eval = MulticlassClassificationEvaluator(
+    labelCol="label", predictionCol="prediction", metricName="accuracy"
+)
+f1_eval = MulticlassClassificationEvaluator(
+    labelCol="label", predictionCol="prediction", metricName="f1"
+)
+
+accuracy = accuracy_eval.evaluate(predictions)
+f1_score = f1_eval.evaluate(predictions)
+
+print("Accuracy:", accuracy)
+print("F1 Score:", f1_score)
+
+# 11. Map Visualization (X-Y Grid)
+pdf = predictions.select("X", "Y", "prediction").toPandas()
+
+plt.figure(figsize=(8,6))
+scatter = plt.scatter(pdf["X"], pdf["Y"], c=pdf["prediction"], cmap="coolwarm", s=80, edgecolors="black")
+plt.xlabel("X Coordinate")
+plt.ylabel("Y Coordinate")
+plt.title("Forest Fire Risk Zones")
+plt.colorbar(scatter, label="Predicted Risk (0 = Low, 1 = High)")
+plt.grid(True)
+plt.show()
